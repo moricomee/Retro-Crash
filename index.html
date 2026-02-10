@@ -3,8 +3,8 @@
 <head>
     <title>Retro Lane Racer</title>
     <style>
-        body { display: flex; flex-direction: column; justify-content: center; align-items: center; height: 100vh; margin: 0; background: #1a1a1a; color: white; font-family: 'Courier New', Courier, mo[...]
-        canvas { border: 4px solid #444; background: #333; box-shadow: 0 0 20px rgba(0,0,0,0.5); cursor: none; }
+        body { display: flex; flex-direction: column; justify-content: center; align-items: center; height: 100vh; margin: 0; background: #1a1a1a; color: white; font-family: 'Courier New', Courier, monospace; }
+        canvas { border: 4px solid #444; background: #333; box-shadow: 0 0 20px rgba(0,0,0,0.5); }
         .stats { margin-bottom: 10px; font-size: 20px; text-transform: uppercase; }
     </style>
 </head>
@@ -13,7 +13,7 @@
         Score: <span id="currentScore">0</span> | High Score: <span id="highScore">0</span>
     </div>
     <canvas id="gameCanvas" width="300" height="500"></canvas>
-    <p>Use Arrows or Tap Sides to Steer</p>
+    <p>Press SPACE to Start | Use Left / Right Arrow Keys to Steer</p>
 
 <script>
     const canvas = document.getElementById("gameCanvas");
@@ -28,37 +28,65 @@
     let playerLane = 1;
     let obstacles = [];
     let score = 0;
-    let highScore = localStorage.getItem("racerHighScore") || 0;
+    let highScore = 0;
     let gameActive = true;
-    let speed = 5;
+    let gameStarted = false;
+    let speed = 2.5;
+    let roadOffset = 0;
 
     highElement.innerText = highScore;
 
-    // Assets: Using simple Base64 strings for "Car Sprites"
+    // Build SVG car images as complete data URIs
+    function makeCarSVG(bodyColor, windshieldY) {
+        return `data:image/svg+xml;charset=utf-8,` + encodeURIComponent(
+            `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 70">
+                <rect x="5" y="5" width="30" height="60" rx="8" fill="${bodyColor}"/>
+                <rect x="10" y="${windshieldY}" width="20" height="14" rx="3" fill="#aadcee" opacity="0.8"/>
+                <rect x="2" y="15" width="5" height="12" rx="2" fill="#222"/>
+                <rect x="33" y="15" width="5" height="12" rx="2" fill="#222"/>
+                <rect x="2" y="48" width="5" height="12" rx="2" fill="#222"/>
+                <rect x="33" y="48" width="5" height="12" rx="2" fill="#222"/>
+                <rect x="12" y="2" width="7" height="4" rx="1" fill="yellow"/>
+                <rect x="21" y="2" width="7" height="4" rx="1" fill="yellow"/>
+                <rect x="12" y="64" width="7" height="4" rx="1" fill="red"/>
+                <rect x="21" y="64" width="7" height="4" rx="1" fill="red"/>
+            </svg>`
+        );
+    }
+
     const playerImg = new Image();
-    playerImg.src = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 70"><rect x="5" y="5" width="30" height="60" rx="5" fill="blue"/><rect x="8" y="15" width="24" heig[...]"
+    playerImg.src = makeCarSVG("#2266ff", 14);
+
     const enemyImg = new Image();
-    enemyImg.src = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 70"><rect x="5" y="5" width="30" height="60" rx="5" fill="red"/><rect x="8" y="40" width="24" height[...]
+    enemyImg.src = makeCarSVG("#dd2222", 42);
 
     // Controls
     window.addEventListener("keydown", (e) => {
-        if (e.key === "ArrowLeft" && playerLane > 0) playerLane--;
-        if (e.key === "ArrowRight" && playerLane < 2) playerLane++;
+        if (!gameStarted && e.key === " ") {
+            e.preventDefault();
+            gameStarted = true;
+            gameActive = true;
+            draw();
+            return;
+        }
+        if (!gameActive || !gameStarted) return;
+        if (e.key === "ArrowLeft" && playerLane > 0) { playerLane--; e.preventDefault(); }
+        if (e.key === "ArrowRight" && playerLane < 2) { playerLane++; e.preventDefault(); }
     });
 
     canvas.addEventListener("touchstart", (e) => {
+        if (!gameActive) return;
         const touchX = e.touches[0].clientX - canvas.getBoundingClientRect().left;
         if (touchX < canvas.width / 2 && playerLane > 0) playerLane--;
         else if (touchX > canvas.width / 2 && playerLane < 2) playerLane++;
         e.preventDefault();
-    }, {passive: false});
+    }, { passive: false });
 
     function spawnEnemy() {
-        if (Math.random() < 0.02 + (score * 0.001)) { 
+        if (Math.random() < 0.012 + (score * 0.0005)) {
             const lane = Math.floor(Math.random() * 3);
-            // Check if lane is already occupied near the top to prevent stacking
-            if (!obstacles.some(o => o.lane === lane && o.y < 100)) {
-                obstacles.push({ lane: lane, y: -100 });
+            if (!obstacles.some(o => o.lane === lane && o.y < 120)) {
+                obstacles.push({ lane: lane, y: -CAR_H });
             }
         }
     }
@@ -67,64 +95,161 @@
         if (!gameActive) return;
 
         spawnEnemy();
+        roadOffset = (roadOffset + speed) % 40;
 
-        obstacles.forEach((obs, index) => {
+        for (let i = obstacles.length - 1; i >= 0; i--) {
+            const obs = obstacles[i];
             obs.y += speed;
 
-            // Collision check (AABB)
-            if (obs.lane === playerLane && obs.y + CAR_H > 420 && obs.y < 420 + CAR_H) {
+            // Collision check
+            const px = LANES[playerLane] - CAR_W / 2;
+            const py = 420;
+            const ox = LANES[obs.lane] - CAR_W / 2;
+            const oy = obs.y;
+
+            if (px < ox + CAR_W && px + CAR_W > ox && py < oy + CAR_H && py + CAR_H > oy) {
                 gameOver();
+                return;
             }
 
-            // Score point when car is passed
+            // Remove & score when off screen
             if (obs.y > canvas.height) {
-                obstacles.splice(index, 1);
+                obstacles.splice(i, 1);
                 score++;
                 scoreElement.innerText = score;
-                speed += 0.1; // Gradual difficulty curve
+                speed += 0.04;
             }
-        });
+        }
     }
 
     function gameOver() {
         gameActive = false;
         if (score > highScore) {
             highScore = score;
-            localStorage.setItem("racerHighScore", highScore);
-            alert("NEW HIGH SCORE: " + score);
-        } else {
-            alert("Game Over! Score: " + score);
+            highElement.innerText = highScore;
         }
-        location.reload();
+
+        // Draw game over overlay
+        ctx.fillStyle = "rgba(0,0,0,0.7)";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = "#ff4444";
+        ctx.font = "bold 36px 'Courier New'";
+        ctx.textAlign = "center";
+        ctx.fillText("GAME OVER", canvas.width / 2, 200);
+        ctx.fillStyle = "#fff";
+        ctx.font = "20px 'Courier New'";
+        ctx.fillText("Score: " + score, canvas.width / 2, 250);
+        ctx.fillText("High Score: " + highScore, canvas.width / 2, 280);
+        ctx.font = "16px 'Courier New'";
+        ctx.fillStyle = "#aaa";
+        ctx.fillText("Press SPACE to restart", canvas.width / 2, 340);
+
+        window.addEventListener("keydown", function restart(e) {
+            if (e.key === " ") {
+                window.removeEventListener("keydown", restart);
+                resetGame();
+            }
+        });
     }
 
-    function draw() {
-        // Road Background
+    function resetGame() {
+        playerLane = 1;
+        obstacles = [];
+        score = 0;
+        speed = 2.5;
+        scoreElement.innerText = 0;
+        gameActive = true;
+        gameStarted = false;
+        drawStartScreen();
+    }
+
+    function drawStartScreen() {
+        // Road background
         ctx.fillStyle = "#333";
         ctx.fillRect(0, 0, canvas.width, canvas.height);
-        
-        // Lane Markings
-        ctx.setLineDash([20, 20]);
+
+        // Lane markings
         ctx.strokeStyle = "#666";
-        ctx.lineWidth = 4;
+        ctx.lineWidth = 3;
+        ctx.setLineDash([20, 20]);
         ctx.beginPath();
         ctx.moveTo(100, 0); ctx.lineTo(100, 500);
         ctx.moveTo(200, 0); ctx.lineTo(200, 500);
         ctx.stroke();
+        ctx.setLineDash([]);
 
-        // Draw Player
-        ctx.drawImage(playerImg, LANES[playerLane] - CAR_W/2, 420, CAR_W, CAR_H);
+        // Draw player car in starting position
+        ctx.drawImage(playerImg, LANES[playerLane] - CAR_W / 2, 420, CAR_W, CAR_H);
 
-        // Draw Enemies
+        // Overlay
+        ctx.fillStyle = "rgba(0,0,0,0.6)";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        // Title
+        ctx.fillStyle = "#00ccff";
+        ctx.font = "bold 30px 'Courier New'";
+        ctx.textAlign = "center";
+        ctx.fillText("RETRO LANE", canvas.width / 2, 160);
+        ctx.fillText("RACER", canvas.width / 2, 200);
+
+        // Instructions
+        ctx.fillStyle = "#fff";
+        ctx.font = "16px 'Courier New'";
+        ctx.fillText("← → Arrow Keys to Steer", canvas.width / 2, 270);
+
+        // Blinking prompt
+        if (Math.floor(Date.now() / 500) % 2 === 0) {
+            ctx.fillStyle = "#ffcc00";
+            ctx.font = "bold 18px 'Courier New'";
+            ctx.fillText("Press SPACE to Start", canvas.width / 2, 340);
+        }
+
+        requestAnimationFrame(drawStartScreen);
+    }
+
+    function draw() {
+        if (!gameActive) return;
+
+        // Road background
+        ctx.fillStyle = "#333";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        // Road edges
+        ctx.fillStyle = "#555";
+        ctx.fillRect(0, 0, 4, canvas.height);
+        ctx.fillRect(canvas.width - 4, 0, 4, canvas.height);
+
+        // Lane markings (animated)
+        ctx.strokeStyle = "#666";
+        ctx.lineWidth = 3;
+        ctx.setLineDash([20, 20]);
+        ctx.lineDashOffset = -roadOffset;
+        ctx.beginPath();
+        ctx.moveTo(100, 0); ctx.lineTo(100, 500);
+        ctx.moveTo(200, 0); ctx.lineTo(200, 500);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // Draw player
+        ctx.drawImage(playerImg, LANES[playerLane] - CAR_W / 2, 420, CAR_W, CAR_H);
+
+        // Draw enemies
         obstacles.forEach(obs => {
-            ctx.drawImage(enemyImg, LANES[obs.lane] - CAR_W/2, obs.y, CAR_W, CAR_H);
+            ctx.drawImage(enemyImg, LANES[obs.lane] - CAR_W / 2, obs.y, CAR_W, CAR_H);
         });
 
         update();
         requestAnimationFrame(draw);
     }
 
-    draw();
+    // Wait for images to load before showing start screen
+    let loaded = 0;
+    function onLoad() {
+        loaded++;
+        if (loaded === 2) drawStartScreen();
+    }
+    playerImg.onload = onLoad;
+    enemyImg.onload = onLoad;
 </script>
 </body>
 </html>
